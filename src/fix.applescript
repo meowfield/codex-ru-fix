@@ -1,8 +1,11 @@
 on run
-	set historyPath to (POSIX path of (path to home folder)) & ".codex/transcription-history.jsonl"
-	set logPath to (POSIX path of (path to home folder)) & ".codex/log/codex-ru-dictation-fix.log"
-	set processedPath to (POSIX path of (path to home folder)) & ".codex/ru-dictation-fix-last-id"
-	set lockPath to (POSIX path of (path to home folder)) & ".codex/ru-dictation-fix.lock"
+	set codexPath to (POSIX path of (path to home folder)) & ".codex"
+	set historyPath to codexPath & "/transcription-history.jsonl"
+	set logPath to codexPath & "/log/codex-ru-dictation-fix.log"
+	set processedPath to codexPath & "/ru-dictation-fix-last-id"
+	set lockPath to codexPath & "/ru-dictation-fix.lock"
+
+	if not my preparePrivateState(codexPath, logPath) then return
 
 	if not my isRussianLayout() then
 		my logMessage("skip: non-russian layout", logPath)
@@ -10,6 +13,11 @@ on run
 	end if
 
 	delay 0.3
+
+	if not my isSafeHistoryPath(codexPath, historyPath) then
+		my logMessage("skip: unsafe history path", logPath)
+		return
+	end if
 
 	set lastLine to ""
 	try
@@ -36,7 +44,7 @@ on run
 	end if
 
 	if itemId is not "" and itemId is my readFileText(processedPath) then
-		my logMessage("skip: already processed id " & itemId, logPath)
+		my logMessage("skip: already processed id", logPath)
 		my releaseLock(lockPath)
 		return
 	end if
@@ -46,7 +54,9 @@ on run
 		delay 0.1
 		tell application "System Events" to key code 9 using command down
 		if itemId is not "" then my writeFileText(itemId, processedPath)
-		my logMessage("pasted: " & itemText, logPath)
+		set idStatus to "none"
+		if itemId is not "" then set idStatus to "present"
+		my logMessage("pasted: id=" & idStatus & " chars=" & (count of characters of itemText), logPath)
 		my releaseLock(lockPath)
 	on error errMsg
 		my logMessage("paste failed: " & errMsg, logPath)
@@ -85,6 +95,40 @@ on isRussianLayout()
 	end try
 end isRussianLayout
 
+on preparePrivateState(codexPath, logPath)
+	set logDir to codexPath & "/log"
+	try
+		do shell script "umask 077; codex=" & quoted form of codexPath & "; logdir=" & quoted form of logDir & "; log=" & quoted form of logPath & "; " & ¬
+			"if [ -L \"$codex\" ] || { [ -e \"$codex\" ] && [ ! -d \"$codex\" ]; }; then exit 1; fi; " & ¬
+			"if [ ! -d \"$codex\" ]; then /bin/mkdir -m 700 \"$codex\"; fi; " & ¬
+			"[ \"$(/usr/bin/stat -f %u \"$codex\")\" = \"$(/usr/bin/id -u)\" ] || exit 1; " & ¬
+			"/bin/chmod go-rwx \"$codex\"; " & ¬
+			"if [ -L \"$logdir\" ] || { [ -e \"$logdir\" ] && [ ! -d \"$logdir\" ]; }; then exit 1; fi; " & ¬
+			"/bin/mkdir -p \"$logdir\"; /bin/chmod go-rwx \"$logdir\"; " & ¬
+			"if [ -L \"$log\" ] || { [ -e \"$log\" ] && [ ! -f \"$log\" ]; }; then exit 1; fi; " & ¬
+			": >> \"$log\"; /bin/chmod go-rwx \"$log\""
+		return true
+	on error
+		return false
+	end try
+end preparePrivateState
+
+on isSafeHistoryPath(codexPath, historyPath)
+	try
+		do shell script "uid=$(/usr/bin/id -u); codex=" & quoted form of codexPath & "; history=" & quoted form of historyPath & "; " & ¬
+			"for p in \"$codex\" \"$history\"; do " & ¬
+			"[ -e \"$p\" ] || exit 1; " & ¬
+			"[ ! -L \"$p\" ] || exit 1; " & ¬
+			"[ \"$(/usr/bin/stat -f %u \"$p\")\" = \"$uid\" ] || exit 1; " & ¬
+			"case \"$(/usr/bin/stat -f %SMp%SLp \"$p\")\" in *w*) exit 1;; esac; " & ¬
+			"done; " & ¬
+			"[ -d \"$codex\" ] || exit 1; [ -f \"$history\" ] || exit 1"
+		return true
+	on error
+		return false
+	end try
+end isSafeHistoryPath
+
 on acquireLock(lockPath)
 	try
 		do shell script "/usr/bin/find " & quoted form of lockPath & " -type d -mmin +1 -exec /bin/rm -rf {} + 2>/dev/null; /bin/mkdir " & quoted form of lockPath
@@ -102,7 +146,7 @@ end releaseLock
 
 on readFileText(filePath)
 	try
-		return do shell script "/bin/cat " & quoted form of filePath & " 2>/dev/null || true"
+		return do shell script "file=" & quoted form of filePath & "; [ -f \"$file\" ] && [ ! -L \"$file\" ] || exit 0; /bin/cat \"$file\" 2>/dev/null || true"
 	on error
 		return ""
 	end try
@@ -110,12 +154,18 @@ end readFileText
 
 on writeFileText(textValue, filePath)
 	try
-		do shell script "/bin/mkdir -p " & quoted form of ((POSIX path of (path to home folder)) & ".codex") & "; /bin/echo -n " & quoted form of textValue & " > " & quoted form of filePath
+		do shell script "umask 077; file=" & quoted form of filePath & "; dir=$(/usr/bin/dirname \"$file\"); " & ¬
+			"if [ -L \"$dir\" ] || { [ -e \"$dir\" ] && [ ! -d \"$dir\" ]; }; then exit 1; fi; " & ¬
+			"/bin/mkdir -p \"$dir\"; /bin/chmod go-rwx \"$dir\"; " & ¬
+			"if [ -L \"$file\" ] || { [ -e \"$file\" ] && [ ! -f \"$file\" ]; }; then exit 1; fi; " & ¬
+			"/usr/bin/printf '%s' " & quoted form of textValue & " > \"$file\"; /bin/chmod go-rwx \"$file\""
 	end try
 end writeFileText
 
 on logMessage(msg, logPath)
 	try
-		do shell script "/bin/mkdir -p " & quoted form of ((POSIX path of (path to home folder)) & ".codex/log") & "; /bin/echo " & quoted form of ((do shell script "/bin/date '+%Y-%m-%d %H:%M:%S'") & " " & msg) & " >> " & quoted form of logPath
+		set codexPath to (POSIX path of (path to home folder)) & ".codex"
+		if not my preparePrivateState(codexPath, logPath) then return
+		do shell script "log=" & quoted form of logPath & "; /usr/bin/printf '%s\n' " & quoted form of ((do shell script "/bin/date '+%Y-%m-%d %H:%M:%S'") & " " & msg) & " >> \"$log\"; /bin/chmod go-rwx \"$log\""
 	end try
 end logMessage
