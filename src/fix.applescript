@@ -49,6 +49,13 @@ on run
 		return
 	end if
 
+	if my isCodexFrontmost() then
+		if itemId is not "" then my writeFileText(itemId, processedPath)
+		my logMessage("skip: frontmost Codex", logPath)
+		my releaseLock(lockPath)
+		return
+	end if
+
 	try
 		set the clipboard to itemText
 		delay 0.1
@@ -94,6 +101,18 @@ on isRussianLayout()
 		return false
 	end try
 end isRussianLayout
+
+on isCodexFrontmost()
+	try
+		tell application "System Events" to tell first application process whose frontmost is true
+			set frontName to name
+			set frontBundleId to bundle identifier
+		end tell
+		return frontName is "Codex" and frontBundleId is "com.openai.codex"
+	on error
+		return false
+	end try
+end isCodexFrontmost
 
 on preparePrivateState(codexPath, logPath)
 	set logDir to codexPath & "/log"
